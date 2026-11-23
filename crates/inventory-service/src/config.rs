@@ -27,6 +27,11 @@ pub struct Config {
     pub postgres: PostgresConfig,
     /// `KAFKA_BOOTSTRAP_SERVERS`: the consumers' and DLQ producer's brokers.
     pub kafka_bootstrap: String,
+    /// `OPERATOR_TOKEN`: the dev operator token reconciliations are resolved with
+    /// (blank: none accepted).
+    pub operator_token: String,
+    /// `OPERATOR_ID`: the operator a valid token stands for.
+    pub operator_id: String,
     /// `OTEL_*`.
     pub tracing: TracingConfig,
 }
@@ -49,6 +54,8 @@ pub fn from_env<S: BuildHasher>(env: &HashMap<String, String, S>) -> Result<Conf
         service_name: text("INVENTORY_SERVICE_NAME", "inventory-service"),
         postgres,
         kafka_bootstrap: text("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092"),
+        operator_token: text("OPERATOR_TOKEN", "dev-operator-token"),
+        operator_id: text("OPERATOR_ID", "dev-operator"),
         tracing,
     })
 }

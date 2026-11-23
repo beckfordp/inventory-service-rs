@@ -7,7 +7,9 @@
 //! `KafkaConsumers.watched`).
 
 use inventory_service::config::{self, Config};
-use inventory_service::store::PgExamples;
+use inventory_service::domain::OperatorAuth;
+use inventory_service::server::AppState;
+use inventory_service::store::PgInventories;
 use inventory_service::{consumers, lifecycle};
 use inventory_service::{db, server};
 use kafka_client::supervised::ConsumerTelemetry;
@@ -75,7 +77,12 @@ async fn serve(config: &Config, tracer: SdkTracer) -> ExitCode {
         &[("port", &config.port.to_string())],
         "inventory-service starting",
     );
-    let store = PgExamples::new(pool);
+    let store = PgInventories::new(pool);
+    let state = AppState {
+        store: store.clone(),
+        auth: OperatorAuth::new(&config.operator_token, &config.operator_id),
+        logger: logger.clone(),
+    };
     let telemetry = ConsumerTelemetry {
         tracer,
         logger: logger.clone(),
@@ -88,13 +95,12 @@ async fn serve(config: &Config, tracer: SdkTracer) -> ExitCode {
             let until_stopped = async move {
                 let _ = stopped.wait_for(|stop| *stop).await;
             };
-            server::run(port, store, until_stopped).await
+            server::run(port, state, until_stopped).await
         }
     };
     let consumers = {
         let bootstrap = config.kafka_bootstrap.clone();
-        let logger = logger.clone();
-        async move { consumers::run(&bootstrap, logger, telemetry, stopped).await }
+        async move { consumers::run(&bootstrap, store, telemetry, stopped).await }
     };
     let signal = shutdown::signal(SERVICE);
     if lifecycle::run_until_stopped(server, consumers, signal, stop, &logger).await {

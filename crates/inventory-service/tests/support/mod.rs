@@ -2,7 +2,7 @@
 
 //! Shared by the integration tests: gluon-rs `service-testing`'s throwaway
 //! PostgreSQL cluster, this service's store over it and its binary under
-//! test, an in-memory store for route tests, and a logger whose lines the
+//! test, a store that always fails, and a logger whose lines the
 //! test can read back.
 
 #![allow(
@@ -15,16 +15,21 @@
 
 use std::collections::HashMap;
 use std::ops::{Deref, DerefMut};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use inventory_service::config::{PORT_VARIABLE, PostgresConfig};
 use inventory_service::db;
-use inventory_service::domain::{Example, ExampleId};
-use inventory_service::store::{Examples, PgExamples, StoreError};
+use inventory_service::domain::{
+    Inventory, InventoryId, LedgerEntry, LineStatus, NewStock, Reconciliation,
+    ReconciliationStatus, ReleaseOutcome, ReservationConflict, ReservationLine, ReserveOrder,
+    ResolveOutcome, ShipOutcome,
+};
+use inventory_service::store::{DuplicateSku, Inventories, PgInventories, StoreError};
 use serde_json::Value;
 use telemetry::logging::Logger;
+use time::OffsetDateTime;
+use uuid::Uuid;
 
 // Not every test file uses both.
 #[allow(unused_imports)]
@@ -68,7 +73,7 @@ impl DerefMut for Service {
 }
 
 /// The service's store over `postgres`, migrated as the service migrates it.
-pub async fn store(postgres: &Postgres) -> PgExamples {
+pub async fn store(postgres: &Postgres) -> PgInventories {
     let env: HashMap<_, _> = postgres.env().into_iter().collect();
     let config = PostgresConfig {
         host: env["POSTGRES_HOST"].clone(),
@@ -79,55 +84,77 @@ pub async fn store(postgres: &Postgres) -> PgExamples {
     };
     let pool = db::connect(&config).await.unwrap();
     db::migrate(&pool).await.unwrap();
-    PgExamples::new(pool)
+    PgInventories::new(pool)
 }
 
-/// An in-memory `example` table; `failing` makes every call fail as a
-/// database would, `down` makes the ping fail.
+/// A store whose every call fails as a database would, and whose ping fails.
 #[derive(Clone, Default)]
-pub struct Memory {
-    rows: Arc<Mutex<Vec<Example>>>,
-    pub failing: Arc<AtomicBool>,
-    pub down: Arc<AtomicBool>,
+pub struct Broken;
+
+fn broken<T>() -> Result<T, StoreError> {
+    Err(StoreError::Database(sqlx::Error::PoolClosed))
 }
 
-impl Memory {
-    /// Holding `rows`.
-    pub fn with(rows: Vec<Example>) -> Self {
-        Self {
-            rows: Arc::new(Mutex::new(rows)),
-            ..Self::default()
-        }
+impl Inventories for Broken {
+    async fn create(
+        &self,
+        _: InventoryId,
+        _: &NewStock,
+    ) -> Result<Result<Inventory, DuplicateSku>, StoreError> {
+        broken()
     }
-
-    fn fail(&self) -> Result<(), StoreError> {
-        if self.failing.load(Ordering::SeqCst) {
-            return Err(StoreError::Database(sqlx::Error::PoolClosed));
-        }
-        Ok(())
+    async fn get(&self, _: InventoryId) -> Result<Option<Inventory>, StoreError> {
+        broken()
     }
-}
-
-impl Examples for Memory {
-    async fn get(&self, id: ExampleId) -> Result<Option<Example>, StoreError> {
-        self.fail()?;
-        Ok(self
-            .rows
-            .lock()
-            .unwrap()
-            .iter()
-            .find(|row| row.id == id)
-            .cloned())
+    async fn update(&self, _: InventoryId, _: i32) -> Result<Option<Inventory>, StoreError> {
+        broken()
     }
-
-    async fn insert(&self, example: &Example) -> Result<(), StoreError> {
-        self.fail()?;
-        self.rows.lock().unwrap().push(example.clone());
-        Ok(())
+    async fn delete(&self, _: InventoryId) -> Result<bool, StoreError> {
+        broken()
     }
-
-    async fn ping(&self, _within: Duration) -> bool {
-        !self.down.load(Ordering::SeqCst)
+    async fn list(&self, _: Option<&str>) -> Result<Vec<Inventory>, StoreError> {
+        broken()
+    }
+    async fn reserve(
+        &self,
+        _: &ReserveOrder,
+    ) -> Result<Result<Vec<ReservationLine>, ReservationConflict>, StoreError> {
+        broken()
+    }
+    async fn release(&self, _: Uuid) -> Result<ReleaseOutcome, StoreError> {
+        broken()
+    }
+    async fn ship(&self, _: Uuid) -> Result<ShipOutcome, StoreError> {
+        broken()
+    }
+    async fn flag(&self, _: Uuid, _: &str) -> Result<bool, StoreError> {
+        broken()
+    }
+    async fn reconciliations(
+        &self,
+        _: Option<ReconciliationStatus>,
+        _: Option<Uuid>,
+    ) -> Result<Vec<Reconciliation>, StoreError> {
+        broken()
+    }
+    async fn resolve(
+        &self,
+        _: Uuid,
+        _: &str,
+        _: Option<&str>,
+        _: OffsetDateTime,
+    ) -> Result<ResolveOutcome, StoreError> {
+        broken()
+    }
+    async fn ledger(
+        &self,
+        _: Option<Uuid>,
+        _: Option<LineStatus>,
+    ) -> Result<Vec<LedgerEntry>, StoreError> {
+        broken()
+    }
+    async fn ping(&self, _: Duration) -> bool {
+        false
     }
 }
 

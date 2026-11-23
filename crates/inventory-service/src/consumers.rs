@@ -1,56 +1,71 @@
 // SPDX-License-Identifier: MIT
 
-//! The Kafka consumers (Scala `KafkaConsumers.supervised`): each assembled and
-//! supervised by gluon-rs `kafka-client`'s `run_supervised` — its own DLQ guard,
-//! restarted with backoff when its stream fails — with `application.conf`'s
-//! `kafka.*` settings (`Resilience::default`). Consuming needs a broker, so
-//! tests/contract's consumer groups test it, not this crate's tests.
+//! The two consumers (Scala `KafkaConsumers.supervised`): `order-events` and
+//! `fulfilment-events`, each supervised with its own DLQ guard, run together
+//! until `stop`.
 
 use std::time::Duration;
 
 use kafka_client::KafkaError;
 use kafka_client::settings::{ConsumerSettings, SettingsError};
 use kafka_client::supervised::{ConsumerTelemetry, Resilience, run_supervised};
-use telemetry::logging::Logger;
 use tokio::sync::watch;
 
-use crate::events::{ExampleEvents, GROUP, TOPIC};
+use crate::events::{
+    FULFILMENT_EVENTS, FULFILMENT_GROUP, FulfilmentEvents, ORDER_EVENTS, ORDER_GROUP, OrderEvents,
+};
+use crate::store::Inventories;
 
-/// How often librdkafka reports the statistics the lag gauge reads.
+/// How often the consumers report their lag.
 pub const LAG_INTERVAL: Duration = Duration::from_secs(5);
 
-/// The example consumer's settings on `bootstrap`.
+/// One consumer's settings.
 ///
 /// # Errors
-/// When its group or topic isn't a name Kafka allows.
-pub fn settings(bootstrap: &str) -> Result<ConsumerSettings, SettingsError> {
+/// A topic or group name the client refuses.
+pub fn settings(
+    bootstrap: &str,
+    topic: &str,
+    group: &str,
+) -> Result<ConsumerSettings, SettingsError> {
     Ok(ConsumerSettings {
         bootstrap: bootstrap.to_owned(),
-        group_id: GROUP.parse()?,
-        topic: TOPIC.parse()?,
+        group_id: group.parse()?,
+        topic: topic.parse()?,
         lag_interval: LAG_INTERVAL,
     })
 }
 
-/// Runs the consumers on `bootstrap` until `stop` is set.
+/// Runs both consumers over `store` until `stop` is set.
 ///
 /// # Errors
-/// When a consumer can't be built (its settings, the DLQ producer's
-/// configuration); a failed stream is restarted, not returned.
-pub async fn run(
+/// When a consumer can't be built (its settings, or its DLQ producer).
+pub async fn run<S: Inventories>(
     bootstrap: &str,
-    logger: Logger,
+    store: S,
     telemetry: ConsumerTelemetry,
     stop: watch::Receiver<bool>,
 ) -> Result<(), KafkaError> {
-    let settings =
-        settings(bootstrap).map_err(|error| KafkaError::ClientCreation(error.to_string()))?;
-    run_supervised(
-        settings,
-        &Resilience::default(),
-        ExampleEvents::new(logger),
-        telemetry,
-        stop,
-    )
-    .await
+    let created = |error: SettingsError| KafkaError::ClientCreation(error.to_string());
+    let orders = settings(bootstrap, ORDER_EVENTS, ORDER_GROUP).map_err(created)?;
+    let fulfilment = settings(bootstrap, FULFILMENT_EVENTS, FULFILMENT_GROUP).map_err(created)?;
+    let resilience = Resilience::default();
+    let logger = telemetry.logger.clone();
+    tokio::try_join!(
+        run_supervised(
+            orders,
+            &resilience,
+            OrderEvents::new(store.clone(), logger.clone()),
+            telemetry.clone(),
+            stop.clone(),
+        ),
+        run_supervised(
+            fulfilment,
+            &resilience,
+            FulfilmentEvents::new(store, logger),
+            telemetry,
+            stop,
+        ),
+    )?;
+    Ok(())
 }

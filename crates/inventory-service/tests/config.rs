@@ -30,6 +30,8 @@ fn defaults() {
                 password: "inventory".to_owned(),
             },
             kafka_bootstrap: "localhost:9092".to_owned(),
+            operator_token: "dev-operator-token".to_owned(),
+            operator_id: "dev-operator".to_owned(),
             tracing: TracingConfig {
                 otlp_endpoint: None,
                 sampling_ratio: 1.0,
@@ -49,6 +51,8 @@ fn every_variable_overrides_its_default() {
         ("POSTGRES_USER", "u"),
         ("POSTGRES_PASSWORD", "p"),
         ("KAFKA_BOOTSTRAP_SERVERS", "127.0.0.1:19092"),
+        ("OPERATOR_TOKEN", "t0k"),
+        ("OPERATOR_ID", "ops"),
         ("REDIS_URI", "redis://127.0.0.1:16379"),
         ("OTEL_EXPORTER_OTLP_ENDPOINT", "http://127.0.0.1:4318"),
         ("OTEL_TRACES_SAMPLER_ARG", "0.25"),
@@ -58,6 +62,10 @@ fn every_variable_overrides_its_default() {
     assert_eq!(config.service_name, "inventory-service-rs");
     assert_eq!(config.postgres.port, 15432);
     assert_eq!(config.kafka_bootstrap, "127.0.0.1:19092");
+    assert_eq!(
+        (config.operator_token.as_str(), config.operator_id.as_str()),
+        ("t0k", "ops")
+    );
     assert_eq!(config.tracing.sampling_ratio, 0.25);
 }
 
